@@ -2,259 +2,382 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <ctype.h>
-#include "tag.h"
-#include "symboltable.h"
+#include "token.h"
 
+// C commands for folder handling are different between Windows and Linux.
+// *In theory* the Linux version will also work for Macs, but I can't promise anything
+// due to a lack of suitable test environments.
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+#include <fnmatch.h>
+#define MAX_PATH 2500
+#endif
+
+void compile_folder(char *input_path, FILE *output);
+void compile_file(char *input_path, FILE *output, bool standalone);
+
+// System functions
+bool is_folder(const char *path);
+int list_vm_files(const char *path, char ***list);
 
 // Lexing functions
 void lex_file(FILE *input, FILE *output);
 void lex_line(const char *line, FILE *output);
-int lex_token(Tag *dest, const char *line);
+int lex_token(Token *dest, const char *line);
 
 // Parsing functions
-void parse_file(FILE *input, FILE *output);
-void parse_class(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_class_var_dec(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_sub_dec(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_parameter_list(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_sub_body(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_var_dec(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_statements(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_let_statement(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_if_statement(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_while_statement(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_do_statement(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_return_statement(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_expression(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_sub_call(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_term(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-void parse_expression_list(Tag **current, Tag **lookahead, FILE *input, FILE *output);
-
-// Holds pointers to all the data we'll need during the compilation process to save us from having to pass seven
-// arguments around in every single function call.
-struct CompileData {
-    Tag *current;
-    Tag *lookahead;
-    SymbolTable *class_table;
-    SymbolTable *subroutine_table;
-    char *class_name;
-    FILE *input;
-    FILE *output;
-}; typedef struct CompileData CompileData;
-
-void compile_file(FILE *input, FILE *output);
-void compile_class(CompileData *data);
-void compile_class_var_dec(CompileData *data);
-void compile_sub_dec(CompileData *data);
-void compile_parameter_list(CompileData *data);
-void compile_sub_body(CompileData *data, Keyword sub_kind, char *sub_name);
-void compile_var_dec(CompileData *data);
-void compile_statements(CompileData *data);
-void compile_let_statement(CompileData *data);
-void compile_if_statement(CompileData *data);
-void compile_while_statement(CompileData *data);
-void compile_do_statement(CompileData *data);
-void compile_return_statement(CompileData *data);
-void compile_expression(CompileData *data);
-void compile_sub_call(CompileData *data);
-void compile_term(CompileData *data);
-int compile_expression_list(CompileData *data);
-char *type_to_string(Tag *current);
-void var_to_string(TableEntry *var_entry, char *buffer);
+void parse_file(char *filename, FILE *input, FILE *output, bool standalone);
+int get_next_instruction(Token *dest[], FILE *input);
+void parse_instruction(Token *instruction[], char *filename, FILE *output);
+void parse_push(char *filename, Token *segment, Token *address, char *dest);
+void parse_pop(char *filename, Token *segment, Token *address, char *dest);
+void parse_add(char *dest);
+void parse_sub(char *dest);
+void parse_neg(char *dest);
+void parse_and(char *dest);
+void parse_or(char *dest);
+void parse_not(char *dest);
+void parse_eq(char *filename, char *dest);
+void parse_lt(char *filename, char *dest);
+void parse_gt(char *filename, char *dest);
+void parse_label(char *filename, Token *label, char *dest);
+void parse_goto(char *filename, Token *label, char *dest);
+void parse_ifgoto(char *filename, Token *label, char *dest);
+void parse_call(char *filename, Token *name, Token *args, char *dest);
+void parse_function(char *filename, Token *name, Token *local_vars, char *dest);
+void parse_return(char *dest);
+void parse_load_data(char *filename, Token *segment, Token *address, char *dest);
+void get_next_label_name(char *filename, char *dest);
+void get_function_label(char *function_name, char *dest);
 
 int main(int argc, char *argv[]) {
     if (argc != 3) {
-        printf("Please supply two arguments: an input .jack file, and an output .vm file.");
+        printf("Please supply two arguments: an input .vm file or folder, and an output .asm file.\n");
         exit(EXIT_FAILURE);
     }
+
     char *input_name = argv[1];
     char *output_name = argv[2];
 
-    FILE *input = fopen(input_name, "r");
-    if (input == NULL) {
-        printf("Error opening input file.\n");
-        exit(EXIT_FAILURE);
-    }
-    FILE *lex_output = fopen("lex_out.xml", "w");
-    if (lex_output == NULL) {
-        printf("Error opening lex_out.xml for writing.\n");
-        exit(EXIT_FAILURE);
-    }
-    lex_file(input, lex_output);
-    fclose(input);
-    fclose(lex_output);
-
-    FILE *lex_input = fopen("lex_out.xml", "r");
-    if (lex_input == NULL) {
-        printf("Error opening lex_out.xml for reading.\n");
-        exit(EXIT_FAILURE);
-    }
-    FILE *parse_output = fopen("parse_out.xml", "w");
-    if (parse_output == NULL) {
-        printf("Error opening parse_out.xml for writing.\n");
-        exit(EXIT_FAILURE);
-    }
-    parse_file(lex_input, parse_output);
-    fclose(lex_input);
-    fclose(parse_output);
-
-    FILE *parse_input = fopen("parse_out.xml", "r");
-    if (parse_input == NULL) {
-        printf("Error opening parse_out.xml for reading.\n");
-        exit(EXIT_FAILURE);
-    }
     FILE *output = fopen(output_name, "w");
     if (output == NULL) {
-        printf("Error opening output file.");
         exit(EXIT_FAILURE);
     }
 
-    // Debugging help
-    setbuf(output, NULL);
+    if (is_folder(input_name)) {
+        compile_folder(input_name, output);
+    } else {
+        compile_file(input_name, output, true);
+    }
 
-    compile_file(parse_input, output);
-    fclose(parse_input);
     fclose(output);
 
     return EXIT_SUCCESS;
 }
 
+void compile_file(char *input_path, FILE *output, bool standalone) {
+    FILE *lex_output = fopen("temp.lex", "w");
+    if (lex_output == NULL) {
+        printf("Error opening .lex output file.");
+        exit(EXIT_FAILURE);
+    }
+
+    FILE *input = fopen(input_path, "r");
+    if (input == NULL) {
+        printf("Error opening input file %s in single-file mode.", input_path);
+        exit(EXIT_FAILURE);
+    }
+
+    lex_file(input, lex_output);
+
+    fclose(input);
+    fclose(lex_output);
+
+    FILE *lex_input = fopen("temp.lex", "r");
+    if (lex_input == NULL) {
+        printf("Error reopening .lex file for input.");
+        exit(EXIT_FAILURE);
+    }
+
+    parse_file(input_path, lex_input, output, standalone);
+    fclose(lex_input);
+}
+
+void compile_folder(char *input_path, FILE *output) {
+    char **list;
+    int no_files = list_vm_files(input_path, &list);
+
+    // Send assembly code to initialise SP to 256 and call Sys.init to output
+    char code[400];
+    char init_label[200];
+    get_function_label("Sys.init", init_label);
+    sprintf(code, "@261\n"
+                  "D=A\n"
+                  "@LCL\n" // We set LCL rather than the stack pointer since the
+                  "M=D\n"  // function code will initialise SP to LCL.
+                  "@%s\n"
+                  "0;JMP", init_label);
+    fputs(code, output);
+
+    for (int i=0; i<no_files; i++) {
+        FILE *lex_output = fopen("temp.lex", "w");
+        if (lex_output == NULL) {
+            printf("Error opening .lex output file.");
+            exit(EXIT_FAILURE);
+        }
+
+        FILE *input = fopen(list[i], "r");
+        if (input == NULL) {
+            printf("Error opening input file %s for lexing.",list[i]);
+            exit(EXIT_FAILURE);
+        }
+
+        lex_file(input, lex_output);
+
+        fclose(input);
+        fclose(lex_output);
+
+        FILE *lex_input = fopen("temp.lex", "r");
+        if (lex_input == NULL) {
+            printf("Error reopening .lex file for input.");
+            exit(EXIT_FAILURE);
+        }
+
+        char filename[MAX_PATH] = "";
+        int slash_pos = 0;
+        while(list[i][slash_pos] != '\\' && list[i][slash_pos] != '/') {
+            slash_pos++;
+        }
+        slash_pos++;
+        int pos = 0;
+        while(list[i][pos+slash_pos] != '\0') {
+            filename[pos] = list[i][pos+slash_pos];
+            pos++;
+        }
+        parse_file(filename, lex_input, output, false);
+
+        fclose(lex_input);
+        free(list[i]);
+    }
+    free(list);
+}
+
+// Note that folder names can have .s in them, so we do need to do this the clever way.
+bool is_folder(const char *path) {
+#ifdef _WIN32
+    // Supplied by windows.h
+    DWORD attributes = GetFileAttributesA(path);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        printf("Input file/folder not found.");
+        exit(EXIT_FAILURE);
+    }
+    return attributes & FILE_ATTRIBUTE_DIRECTORY;
+#else
+    // Supplied by sys/stat.h
+    struct stat buffer;
+    if (stat(path, &buffer) != 0) {
+        printf("Input file/folder not found.");
+        exit(EXIT_FAILURE);
+    };
+    return S_ISDIR(buffer.st_mode);
+#endif
+}
+
+// Sets **list to a list of paths of all .vm files in the folder path. The return value is the length of the list
+// (counting from 0). Full disclosure, this is beyond my C abilities and I turned to every corner of the Internet for
+// help. I would feel bad about this if I taught C, but I don't, so I don't! :-D
+int list_vm_files(const char *path, char ***list) {
+#ifdef _WIN32
+    // This is all from windows.h.
+    WIN32_FIND_DATA fd_file;
+    HANDLE hFind = NULL;
+
+    char s_path[2048];
+    sprintf(s_path, "%s\\*.vm", path);
+    int length = 0;
+
+    hFind = FindFirstFile(s_path, &fd_file);
+    if (hFind == INVALID_HANDLE_VALUE)
+    {
+        printf("No .vm files found in specified folder.");
+        exit(EXIT_FAILURE);
+    }
+    do {
+        length++;
+    } while(FindNextFile(hFind, &fd_file));
+    FindClose(hFind);
+
+    *list = (char **)malloc(length * sizeof(char *));
+    hFind = FindFirstFile(s_path, &fd_file);
+    for(int i=0; i<length; i++) {
+        (*list)[i] = (char *)malloc((MAX_PATH+1)*sizeof(char));
+        sprintf((*list)[i], "%s\\%s", path, fd_file.cFileName);
+        FindNextFile(hFind, &fd_file);
+    }
+    FindClose(hFind);
+
+    return length;
+#else
+    // This is all from dirent.h and fnmatch.h
+    DIR *dir;
+    struct dirent *entry;
+
+    dir = opendir(path);
+    if (dir == NULL) {
+        printf("Error opening folder");
+        exit(EXIT_FAILURE);
+    }
+
+    int length = 0;
+    entry = readdir(dir);
+    while (entry != NULL) {
+        if (fnmatch("*.vm", entry->d_name, FNM_CASEFOLD) == 0) {
+            length++;
+        }
+        entry = readdir(dir);
+    }
+    closedir(dir);
+
+    *list = (char **)malloc(length * sizeof(char *));
+    int i = 0;
+    dir = opendir(path);
+    entry = readdir(dir);
+    while (entry != NULL) {
+        if (fnmatch("*.vm", entry->d_name, FNM_CASEFOLD) == 0) {
+            (*list)[i] = (char *)malloc((MAX_PATH+1)*sizeof(char));
+            sprintf((*list)[i], "%s/%s", path, entry->d_name);
+            i++;
+        }
+        entry = readdir(dir);
+    }
+    closedir(dir);
+
+    return length;
+#endif
+}
+
 // Outputs a tokenised version of input to output.
 void lex_file(FILE *input, FILE *output) {
     char line[MAX_LINE_LENGTH];
-    write_non_terminal(NT_TOKENS, false, output);
     while (fgets(line, MAX_LINE_LENGTH, input) != NULL) {
         lex_line(line, output);
     }
-    write_non_terminal(NT_TOKENS, true, output);
 }
 
 // Reads the next line from input, tokenises it, and writes the resulting tokens to output.
 void lex_line(const char *line, FILE *output) {
-    // This will be true if we are currently inside a comment of the form /*...*/ (which may have started on a
-    // previous line).
-    static bool inside_comment = false;
-
     int pos = 0;
-    // In each iteration of this loop, everything up to line[pos] has been lexed.
-    // NB newlines aren't tokens in Jack, so no need to care about \n versus \r\n.
-    while (line[pos] != '\n' && line[pos] != '\0') {
-        // Ignore all whitespace.
-        if (line[pos] == ' ' || line[pos] == '\t') {
-            pos++;
-            continue;
-        }
+    bool tokens_on_line = false;
 
-        // If we are inside a comment, ignore everything until the end of the comment.
-        if (inside_comment) {
-            if (line[pos] == '*' && line[pos+1] == '/') {
-                pos++;
-                inside_comment = false;
-            }
+    // In each iteration of this loop, everything up to line[pos] has been lexed.
+    while ((line[pos] != '\n') && (line[pos] != '\r')) {
+        // Ignore all whitespace.
+        if (line[pos] == ' ') {
             pos++;
             continue;
         }
 
         // Ignore all comments.
-        if (line[pos] == '/' && line[pos+1] == '/') {
-            return;
-        } else if (line[pos] == '/' && line[pos+1] == '*') {
-            // Note the comment may end on this line
-            inside_comment = true;
-            pos += 2;
-            continue;
+        if (line[pos] == '/') {
+            break;
         }
 
-        // Otherwise, we have at least one token, so lex it.
-        Tag *next = malloc_tag();
+        // Otherwise, we have at least one non-newline token, so lex it.
+        tokens_on_line = true;
+        Token *next = malloc_token();
         pos += lex_token(next, line + pos);
-        write_tag(next, output);
-        free_tag(&next);
+        write_token(next, output);
+        free_token(next);
+    }
+
+    // Ignore empty lines, but otherwise lex the newline at the end.
+    if (tokens_on_line) {
+        Token *next = malloc_token();
+        lex_token(next, "\n");
+        write_token(next, output);
+        free_token(next);
     }
 }
 
 // Reads the next token from a non-empty, non-label, non-comment line into dest, then returns the number of characters
 // in that token.
-int lex_token(Tag *dest, const char *line) {
+int lex_token(Token *dest, const char *line) {
     int length;
 
-    if (line[0] >= '0' && line[0] <= '9') {
+    if (line[0] == '\n') {
+        dest->type = NEWLINE;
+        length = 1;
+    } else if (line[0] >= '0' && line[0] <= '9') {
         // Identifiers can't start with integers, so this must be an integer literal
         dest->type = INTEGER_LITERAL;
         char literal[MAX_LINE_LENGTH];
-        for (length = 0; line[length] >= '0' && line[length] <= '9'; length++) {
+        for(length = 0; line[length] >= '0' && line[length] <= '9'; length++) {
             literal[length] = line[length];
         }
         literal[length] = '\0';
         dest->value.int_val = strtol(literal, NULL, 10);
-    } else if (line[0] == '\"') {
-        // Identifiers can't start with quotes, so this must be a string literal
-        dest->type = STRING_LITERAL;
-        for (length = 1; line[length] != '\"'; length++);
-        length++;
-        dest->value.str_val = (char *) malloc(length-1);
-        strncpy(dest->value.str_val, line+1, length-2);
-        dest->value.str_val[length-2] = '\0'; // Strncpy doesn't null-terminate.
-    } else if (line[0] == '{' || line[0] == '}' || line[0] == '(' || line[0] == ')' || line[0] == '[' ||
-               line[0] == ']' || line[0] == '.' || line[0] == ',' || line[0] == ';' || line[0] == '+' ||
-               line[0] == '-' || line[0] == '*' || line[0] == '/' || line[0] == '&' || line[0] == '|' ||
-               line[0] == '<' || line[0] == '=' || line[0] == '>' || line[0] == '~'){
-        dest->type = SYMBOL;
-        length = 1;
-        dest->value.str_val = (char *)(malloc(2));
-        dest->value.str_val[0] = line[0];
-        dest->value.str_val[1] = '\0';
-    } else { // We either have an identifier or a keyword.
-        // Either way, it keeps going until a character other than a letter, a digit, or an underscore.
+    } else { // We either have an identifier or a keyword
+        // Either way, it keeps going until reaching either a space, a newline. (Per the definition of an identifier
+        // token, if there's a // before a space, it counts as part of the identifier rather than a comment.)
         length = 0;
-        while(isalpha(line[length]) || isdigit(line[length]) || line[length] == '_'){
+        while(line[length] != ' ' && line[length] != '\n' && line[length] != '\r'){
             length++;
         }
 
         dest->type = KEYWORD; // Default
-        if (strncmp(line, "class", length) == 0 && length == 5) {
-            dest->value.key_val = KW_CLASS;
-        } else if (strncmp(line, "constructor", length) == 0 && length == 11) {
-            dest->value.key_val = KW_CONSTRUCTOR;
-        } else if (strncmp(line, "function", length) == 0 && length == 8) {
-            dest->value.key_val = KW_FUNCTION;
-        } else if (strncmp(line, "method", length) == 0 && length == 6) {
-            dest->value.key_val = KW_METHOD;
-        } else if (strncmp(line, "field", length) == 0 && length == 5) {
-            dest->value.key_val = KW_FIELD;
-        } else if (strncmp(line, "static", length) == 0 && length == 6) {
-            dest->value.key_val = KW_STATIC;
-        } else if (strncmp(line, "var", length) == 0 && length == 3) {
-            dest->value.key_val = KW_VAR;
-        } else if (strncmp(line, "int", length) == 0 && length == 3) {
-            dest->value.key_val = KW_INT;
-        } else if (strncmp(line, "char", length) == 0 && length == 4) {
-            dest->value.key_val = KW_CHAR;
-        } else if (strncmp(line, "boolean", length) == 0 && length == 7) {
-            dest->value.key_val = KW_BOOLEAN;
-        } else if (strncmp(line, "void", length) == 0 && length == 4) {
-            dest->value.key_val = KW_VOID;
-        } else if (strncmp(line, "true", length) == 0 && length == 4) {
-            dest->value.key_val = KW_TRUE;
-        } else if (strncmp(line, "false", length) == 0 && length == 5) {
-            dest->value.key_val = KW_FALSE;
-        } else if (strncmp(line, "null", length) == 0 && length == 4) {
-            dest->value.key_val = KW_NULL;
-        } else if (strncmp(line, "this", length) == 0 && length == 4) {
+        if (strncmp(line, "push", length) == 0) {
+            dest->value.key_val = PUSH;
+        } else if (strncmp(line, "pop", length) == 0) {
+            dest->value.key_val = POP;
+        } else if (strncmp(line, "add", length) == 0) {
+            dest->value.key_val = ADD;
+        } else if (strncmp(line, "sub", length) == 0) {
+            dest->value.key_val = SUB;
+        } else if (strncmp(line, "neg", length) == 0) {
+            dest->value.key_val = NEG;
+        } else if (strncmp(line, "and", length) == 0) {
+            dest->value.key_val = AND;
+        } else if (strncmp(line, "or", length) == 0) {
+            dest->value.key_val = OR;
+        } else if (strncmp(line, "not", length) == 0) {
+            dest->value.key_val = NOT;
+        } else if (strncmp(line, "eq", length) == 0) {
+            dest->value.key_val = EQ;
+        } else if (strncmp(line, "gt", length) == 0) {
+            dest->value.key_val = GT;
+        } else if (strncmp(line, "lt", length) == 0) {
+            dest->value.key_val = LT;
+        } else if (strncmp(line, "local", length) == 0) {
+            dest->value.key_val = LOCAL;
+        } else if (strncmp(line, "constant", length) == 0) {
+            dest->value.key_val = CONSTANT;
+        } else if (strncmp(line, "this", length) == 0) {
             dest->value.key_val = KW_THIS;
-        } else if (strncmp(line, "let", length) == 0 && length == 3) {
-            dest->value.key_val = KW_LET;
-        } else if (strncmp(line, "do", length) == 0 && length == 2) {
-            dest->value.key_val = KW_DO;
-        } else if (strncmp(line, "if", length) == 0 && length == 2) {
-            dest->value.key_val = KW_IF;
-        } else if (strncmp(line, "else", length) == 0 && length == 4) {
-            dest->value.key_val = KW_ELSE;
-        } else if (strncmp(line, "while", length) == 0 && length == 5) {
-            dest->value.key_val = KW_WHILE;
-        } else if (strncmp(line, "return", length) == 0 && length == 6) {
-            dest->value.key_val = KW_RETURN;
+        } else if (strncmp(line, "that", length) == 0) {
+            dest->value.key_val = THAT;
+        } else if (strncmp(line, "pointer", length) == 0) {
+            dest->value.key_val = POINTER;
+        } else if (strncmp(line, "argument", length) == 0) {
+            dest->value.key_val = ARGUMENT;
+        } else if (strncmp(line, "static", length) == 0) {
+            dest->value.key_val = STATIC;
+        } else if (strncmp(line, "temp", length) == 0) {
+            dest->value.key_val = TEMP;
+        } else if (strncmp(line, "label", length) == 0) {
+            dest->value.key_val = LABEL;
+        } else if (strncmp(line, "goto", length) == 0) {
+            dest->value.key_val = GOTO;
+        } else if (strncmp(line, "if-goto", length) == 0) {
+            dest->value.key_val = IFGOTO;
+        } else if (strncmp(line, "function", length) == 0) {
+            dest->value.key_val = FUNCTION;
+        } else if (strncmp(line, "call", length) == 0) {
+            dest->value.key_val = CALL;
+        } else if (strncmp(line, "return", length) == 0) {
+            dest->value.key_val = RETURN;
         } else { // We've now ruled out all the keywords, so it must be an identifier.
             dest->type = IDENTIFIER;
             dest->value.str_val = (char *)malloc(length+1);
@@ -265,1005 +388,530 @@ int lex_token(Tag *dest, const char *line) {
     return length;
 }
 
-// Input should be a tokenised file. Writes a parse tree in XML form to output.
-void parse_file(FILE *input, FILE *output) {
-    Tag **lookahead = malloc(sizeof(Tag *));
-    *lookahead = NULL;
-    Tag **current = malloc(sizeof(Tag *));
-    *current = NULL;
-    advance_tag(current, lookahead, input);
-    advance_tag(current, lookahead, input);
-    // Now *current points to the first tag in the file, and *lookahead points to the second tag.
-    // Note that copy_tag and advance_tag handle malloc'ing and free'ing for us.
-
-    // This tag is in there purely to conform to the XML standard --- see the lab sheet.
-    if ((*current)->type != NON_TERMINAL || (*current)->value.nt_val != NT_TOKENS) {
-        printf("Error: Token list should start with <tokens>.\n");
-        exit(EXIT_FAILURE);
+// Input should be a tokenised file. Writes Hack assembly code to output.
+void parse_file(char *filename, FILE *input, FILE *output, bool standalone) {
+    Token *instruction[MAX_LINE_LENGTH];
+    if (standalone) {
+        // Send code to output to initialise SP. Comment out to make week 10 test scripts work.
+/*        fputs("@256\n"
+                "D=A\n"
+                "@SP\n"
+                "M=D\n", output); */
     }
-    advance_tag(current, lookahead, input);
-
-    // Now we should be at the class declaration, which we parse in full.
-    if ((*current)->type != KEYWORD || (*current)->value.nt_val != KW_CLASS) {
-        printf("Error: All Jack files should consist of a single class.\n");
-        exit(EXIT_FAILURE);
+    while (1) {
+        // Get the next instruction.
+        int length = get_next_instruction(instruction, input);
+        // If we just have an EOF, free the token and finish.
+        if (length == 0) {
+            free_token(instruction[0]);
+            break;
+        }
+        // Otherwise, actually parse the instruction, free the token and repeat.
+        parse_instruction(instruction, filename, output);
+        for(int i=0; i<length; i++) {
+            free_token(instruction[i]);
+        }
     }
-    parse_class(current, lookahead, input, output);
-
-    // Now our current tag should be the </tokens> tag at the end of the file, and lookahead should be null.
-    if ((*lookahead) != NULL) {
-        printf("Error: All Jack files should consist of a single class.\n");
-        exit(EXIT_FAILURE);
-    } if ((*current)->type != NON_TERMINAL || (*current)->value.nt_val != NT_TOKENS) {
-        printf("Error: Token list should end with </tokens>.\n");
-        exit(EXIT_FAILURE);
+    if (standalone) {
+        // Send code to output to end with infinite loop.
+        fputs("(HaltInfiniteLoop)\n"
+              "@HaltInfiniteLoop\n"
+              "0;JMP", output);
     }
-    advance_tag(current, lookahead, input);
-    // Current and lookahead are already freed.
 }
 
-// The general "contract" of a parse_*** function should be: If e.g. parse_if_statement is called, then "current" points
-// to the first token of an <ifStatement> non-terminal, and "lookahead" points to the token after "current". On function
-// return, "current" will point to the token after the last token in that <ifStatement> (i.e. after the ';') and
-// "lookahead" will once again point to the token after "current".
-// This is what careful error-checking looks like.
-// Children in AST: class name identifier, <classVarDec>, <subroutineDec>.
-void parse_class(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax is 'class', identifier, '{', {<classVarDec>}, {<subroutineDec>}, '}'
-    write_non_terminal(NT_CLASS, false, output);
-    advance_tag(current, lookahead, input);
-
-    if ((*current)->type != IDENTIFIER) {
-        printf("Error: <class> expected identifier token.\n");
-        exit(EXIT_FAILURE);
+// Copies a list of tokens corresponding to the next Hack VM instruction into dest, omitting the newline. Returns number
+// of tokens.
+int get_next_instruction(Token *dest[], FILE *input) {
+    dest[0] = malloc_token();
+    bool instruction_exists = read_token(dest[0], input);
+    if (!instruction_exists) {
+        return 0;
     }
-    copy_tag(current, lookahead, input, output);
-
-    if ((*current)->type != SYMBOL || strcmp((*current)->value.str_val, "{") != 0) {
-        printf("Error: <class> expected '{' token.\n");
-        exit(EXIT_FAILURE);
-    }
-    advance_tag(current, lookahead, input);
-
-    bool var_dec_over = false;
-    while (true) {
-        // If we see a } then the class is over, close the tag and return.
-        if ((*current)->type == SYMBOL && strcmp((*current)->value.str_val, "}") == 0) {
-            advance_tag(current, lookahead, input);
-            write_non_terminal(NT_CLASS, true, output);
-            return;
+    int length = 1;
+    while (1) {
+        dest[length] = malloc_token();
+        read_token(dest[length], input);
+        if (dest[length]->type == NEWLINE) {
+            free_token(dest[length]);
+            break;
         }
+        length++;
+    }
+    return length;
+}
 
-        // A 'static' or a 'field' means this is a variable declaration. A 'constructor', 'function' or 'method' means
-        // this is a subroutine declaration. Anything else is unexpected.
-        if ((*current)->type == KEYWORD && ((*current)->value.key_val == KW_STATIC || (*current)->value.key_val == KW_FIELD)) {
-            if (var_dec_over) {
-                printf("Error: All variables must occur at start of class declaration.\n");
-                exit(EXIT_FAILURE);
+// Parse the given VM instruction and write the corresponding assembly code to the output file.
+void parse_instruction(Token *instruction[], char *filename, FILE *output) {
+    char code_to_output[1000000] = "";
+
+    // We can tell the entire syntax of the instruction from the first token, which should be a keyword.
+    if (instruction[0]->type != KEYWORD) {
+        printf("Malformed instruction!");
+        exit(EXIT_FAILURE);
+    } switch (instruction[0]->value.key_val) {
+        case PUSH:     parse_push(filename, instruction[1], instruction[2], code_to_output); break;
+        case POP:      parse_pop(filename, instruction[1], instruction[2], code_to_output); break;
+        case ADD:      parse_add(code_to_output); break;
+        case SUB:      parse_sub(code_to_output); break;
+        case NEG:      parse_neg(code_to_output); break;
+        case AND:      parse_and(code_to_output); break;
+        case OR:       parse_or(code_to_output); break;
+        case NOT:      parse_not(code_to_output); break;
+        case EQ:       parse_eq(filename, code_to_output); break;
+        case LT:       parse_lt(filename, code_to_output); break;
+        case GT:       parse_gt(filename, code_to_output); break;
+        case LABEL:    parse_label(filename, instruction[1], code_to_output); break;
+        case GOTO:     parse_goto(filename, instruction[1], code_to_output); break;
+        case IFGOTO:   parse_ifgoto(filename, instruction[1], code_to_output); break;
+        case FUNCTION: parse_function(filename, instruction[1], instruction[2], code_to_output); break;
+        case CALL:     parse_call(filename, instruction[1], instruction[2], code_to_output); break;
+        case RETURN:   parse_return(code_to_output); break;
+        default: printf("Malformed instruction!"); exit(EXIT_FAILURE);
+    }
+
+    fputs(code_to_output, output);
+    fflush(output);
+}
+
+// Append assembly code for an "add" instruction into dest.
+void parse_add(char *dest) {
+    strcat(dest, "// add\n"
+                 "@SP\n"
+                 "M=M-1\n"
+                 "A=M\n"
+                 "D=M\n"
+                 "@SP\n"
+                 "A=M-1\n"
+                 "M=M+D\n");
+}
+
+// Append assembly code for the instruction "push [segment] [address]" into dest.
+void parse_push(char *filename, Token *segment, Token *address, char *dest) {
+    if (segment->type != KEYWORD) {
+        printf("Malformed instruction!");
+        exit(EXIT_FAILURE);
+    }
+    if (segment->value.key_val == CONSTANT) {
+        char code[200] = "";
+        sprintf(code, "//push\n"
+                      "@%d\n"
+                      "D=A\n"
+                      "@SP\n"
+                      "M=M+1\n"
+                      "A=M-1\n"
+                      "M=D\n", address->value.int_val);
+        strcat(dest, code);
+    } else {
+        parse_load_data(filename, segment, address, dest);
+        strcat(dest, "D=M\n"
+                     "@SP\n"
+                     "M=M+1\n"
+                     "A=M-1\n"
+                     "M=D\n");
+    }
+}
+
+// Append assembly code for the instruction "pop [segment] [address]" into dest.
+void parse_pop(char *filename, Token *segment, Token *address, char *dest) {
+    if (segment->type != KEYWORD) {
+        printf("Malformed instruction!");
+        exit(EXIT_FAILURE);
+    }
+    strcat(dest, "//pop\n");
+    parse_load_data(filename, segment, address, dest);
+    strcat(dest, "D=A\n"
+                 "@R13\n"
+                 "M=D\n" // Now R13 contains the address we want to pop into
+                 "@SP\n"
+                 "M=M-1\n"
+                 "A=M\n"
+                 "D=M\n" // Now we have decremented SP and stored the value we want to pop in D
+                 "@R13\n"
+                 "A=M\n"
+                 "M=D\n");
+}
+
+// Append assembly code for the instruction "sub" into dest.
+void parse_sub(char *dest) {
+    strcat(dest, "// sub\n"
+                 "@SP\n"
+                 "M=M-1\n"
+                 "A=M\n"
+                 "D=M\n"
+                 "@SP\n"
+                 "A=M-1\n"
+                 "M=M-D\n");
+}
+
+// Append assembly code for the instruction "neg" into dest.
+void parse_neg(char *dest) {
+    strcat(dest, "// neg\n"
+                 "@SP\n"
+                 "A=M-1\n"
+                 "D=-M\n"
+                 "M=D\n");
+}
+
+// Append assembly code for the instruction "and" into dest.
+void parse_and(char *dest) {
+    strcat(dest, "// and\n"
+                 "@SP\n"
+                 "M=M-1\n"
+                 "A=M\n"
+                 "D=M\n"
+                 "@SP\n"
+                 "A=M-1\n"
+                 "M=M&D\n");
+}
+
+// Append assembly code for the instruction "or" into dest.
+void parse_or(char *dest) {
+    strcat(dest, "// or\n"
+                 "@SP\n"
+                 "M=M-1\n"
+                 "A=M\n"
+                 "D=M\n"
+                 "@SP\n"
+                 "A=M-1\n"
+                 "M=M|D\n");
+}
+
+// Append assembly code for the instruction "not" into dest.
+void parse_not(char *dest) {
+    strcat(dest, "// not\n"
+                 "@SP\n"
+                 "A=M-1\n"
+                 "D=!M\n"
+                 "M=D\n");
+}
+
+// Append assembly code for the instruction "eq" into dest.
+void parse_eq(char *filename, char *dest) {
+    char new_label1[MAX_LINE_LENGTH] = "";
+    get_next_label_name(filename, new_label1);
+    char new_label2[MAX_LINE_LENGTH] = "";
+    get_next_label_name(filename, new_label2);
+
+    char code[4*MAX_LINE_LENGTH+200];
+    sprintf(code, "// eq\n"
+                  "@SP\n"
+                  "M=M-1\n"
+                  "A=M\n"
+                  "D=M\n"
+                  "@SP\n"
+                  "A=M-1\n"
+                  "D=D-M\n" // D now contains RAM[SP-1] - RAM[SP-2], and SP has been decremented
+                  "@%s\n"
+                  "D;JEQ\n"
+                  "@SP\n" // If we are here then RAM[SP-2] != RAM[SP-1], so write 0x0000 to RAM[SP-2]
+                  "A=M-1\n"
+                  "M=0\n"
+                  "@%s\n"
+                  "0;JMP\n"
+                  "(%s)\n"
+                  "@SP\n"
+                  "A=M-1\n"
+                  "M=-1\n" // If we are here then RAM[SP-2] == RAM[SP-1], so write 0xFFFF to RAM[SP-2]
+                  "(%s)\n", new_label1, new_label2, new_label1, new_label2);
+    strcat(dest, code);
+}
+
+// Append assembly code for the instruction "lt" into dest.
+void parse_lt(char *filename, char *dest) {
+    char new_label1[MAX_LINE_LENGTH] = "";
+    get_next_label_name(filename, new_label1);
+    char new_label2[MAX_LINE_LENGTH] = "";
+    get_next_label_name(filename, new_label2);
+
+    char code[4*MAX_LINE_LENGTH+200];
+    sprintf(code, "// lt\n"
+                  "@SP\n"
+                  "M=M-1\n"
+                  "A=M\n"
+                  "D=M\n"
+                  "@SP\n"
+                  "A=M-1\n"
+                  "D=D-M\n" // D now contains RAM[SP-1] - RAM[SP-2], and SP has been decremented
+                  "@%s\n"
+                  "D;JGT\n"
+                  "@SP\n" // If we are here then RAM[SP-2] >= RAM[SP-1], so write 0x0000 to RAM[SP-2]
+                  "A=M-1\n"
+                  "M=0\n"
+                  "@%s\n"
+                  "0;JMP\n"
+                  "(%s)\n"
+                  "@SP\n"
+                  "A=M-1\n"
+                  "M=-1\n" // If we are here then RAM[SP-2] < RAM[SP-1], so write 0xFFFF to RAM[SP-2]
+                  "(%s)\n", new_label1, new_label2, new_label1, new_label2);
+    strcat(dest, code);
+}
+
+// Append assembly code for the instruction "gt" into dest.
+void parse_gt(char *filename, char *dest) {
+    char new_label1[MAX_LINE_LENGTH] = "";
+    get_next_label_name(filename, new_label1);
+    char new_label2[MAX_LINE_LENGTH] = "";
+    get_next_label_name(filename, new_label2);
+
+    char code[4*MAX_LINE_LENGTH+200];
+    sprintf(code, "// gt\n"
+                  "@SP\n"
+                  "M=M-1\n"
+                  "A=M\n"
+                  "D=M\n"
+                  "@SP\n"
+                  "A=M-1\n"
+                  "D=D-M\n" // D now contains RAM[SP-1] - RAM[SP-2], and SP has been decremented
+                  "@%s\n"
+                  "D;JLT\n"
+                  "@SP\n" // If we are here then RAM[SP-2] <= RAM[SP-1], so write 0x0000 to RAM[SP-2]
+                  "A=M-1\n"
+                  "M=0\n"
+                  "@%s\n"
+                  "0;JMP\n"
+                  "(%s)\n"
+                  "@SP\n"
+                  "A=M-1\n"
+                  "M=-1\n" // If we are here then RAM[SP-2] > RAM[SP-1], so write 0xFFFF to RAM[SP-2]
+                  "(%s)\n", new_label1, new_label2, new_label1, new_label2);
+    strcat(dest, code);
+}
+
+// Append assembly code for the instruction "label [label]" into dest.
+void parse_label(char *filename, Token *label, char *dest) {
+    char code[MAX_LINE_LENGTH+200] = "";
+    sprintf(code, "// Label\n(manual$%s$%s)\n", filename, label->value.str_val);
+    strcat(dest, code);
+}
+
+// Append assembly code for the instruction "goto [label]" into dest.
+void parse_goto(char *filename, Token *label, char *dest) {
+    char code[MAX_LINE_LENGTH+200] = "";
+    sprintf(code, "// Goto\n@manual$%s$%s\n"
+                  "0;JMP\n", filename, label->value.str_val);
+    strcat(dest, code);
+}
+
+// Append assembly code for the instruction "if-goto [label]" into dest.
+void parse_ifgoto(char *filename, Token *label, char *dest) {
+    char code[MAX_LINE_LENGTH+200] = "";
+    sprintf(code, "// If-goto\n@SP\n"
+                  "M=M-1\n"
+                  "A=M\n"
+                  "D=M\n"
+                  "@manual$%s$%s\n"
+                  "D;JNE\n", filename, label->value.str_val);
+    strcat(dest, code);
+}
+
+// Append assembly code to dest which loads the RAM address pointed to by [segment] [address] into A, where [segment]
+// cannot be the keyword "constant".
+void parse_load_data(char *filename, Token *segment, Token *address, char *dest) {
+    char code[200] = "";
+
+    switch (segment->value.key_val) {
+        case LOCAL:
+            sprintf(code, "@%d\n"
+                          "D=A\n"
+                          "@LCL\n"
+                          "A=M+D\n", address->value.int_val);
+            break;
+        case ARGUMENT:
+            sprintf(code, "@%d\n"
+                          "D=A\n"
+                          "@ARG\n"
+                          "A=M+D\n", address->value.int_val);
+            break;
+        case KW_THIS:
+            sprintf(code, "@%d\n"
+                          "D=A\n"
+                          "@THIS\n"
+                          "A=M+D\n", address->value.int_val);
+            break;
+        case THAT:
+            sprintf(code, "@%d\n"
+                          "D=A\n"
+                          "@THAT\n"
+                          "A=M+D\n", address->value.int_val);
+            break;
+        case POINTER:
+            if (address->value.int_val == 0) {
+                strcat(code, "@THIS\n");
+            } else {
+                strcat(code, "@THAT\n");
             }
-            parse_class_var_dec(current, lookahead, input, output);
-        } else if ((*current)->type == KEYWORD && ((*current)->value.key_val == KW_CONSTRUCTOR ||
-                        (*current)->value.key_val == KW_METHOD || (*current)->value.key_val == KW_FUNCTION)) {
-            var_dec_over = true;
-            parse_sub_dec(current, lookahead, input, output);
-        } else {
-            printf("Error: Unexpected token in <class>.\n");
+            break;
+        case TEMP:
+            sprintf(code,"@R%d\n", 5 + address->value.int_val);
+            break;
+        case STATIC:
+            sprintf(code,"@%s.%d\n", filename, address->value.int_val);
+            break;
+        case CONSTANT:
+            printf("Error: CONSTANT passed to parse_load_data.");
             exit(EXIT_FAILURE);
-        }
-
-        if (current == NULL) {
-            printf("Error: <class> expected '}' token.\n");
+        default:
+            printf("Malformed instruction!");
             exit(EXIT_FAILURE);
-        }
     }
+    strcat(dest,code);
 }
 
-// This is what a lack of error-checking looks like. It's much easier!
-// Children in AST: kind keyword (static/field), type keyword, list of identifiers.
-void parse_class_var_dec(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: ('static' | 'field'), ('int' | 'char' | 'boolean' | identifier), identifier, {',', identifier}*, ';'
-    write_non_terminal(NT_CLASS_VAR_DEC, false, output);
-
-    copy_tag(current, lookahead, input, output);
-    copy_tag(current, lookahead, input, output);
-    copy_tag(current, lookahead, input, output);
-
-    while ((*current)->type != SYMBOL || strcmp((*current)->value.str_val, ";") != 0) {
-        advance_tag(current, lookahead, input);
-        copy_tag(current, lookahead, input, output);
-    }
-    advance_tag(current, lookahead, input);
-
-    write_non_terminal(NT_CLASS_VAR_DEC, true, output);
+void parse_call(char *filename, Token *name, Token *args, char *dest) {
+    char code[500+4*MAX_LINE_LENGTH] = "";
+    char return_label[MAX_LINE_LENGTH] = "";
+    get_next_label_name(filename, return_label);
+    char function_label[MAX_LINE_LENGTH] = "";
+    get_function_label(name->value.str_val, function_label);
+    sprintf(code, "// Call\n"
+                  "@%s // Push call frame to stack\n"
+                  "D=A\n"
+                  "@SP\n"
+                  "A=M\n"
+                  "M=D\n"
+                  "@LCL\n"
+                  "D=M\n"
+                  "@SP\n"
+                  "A=M+1\n"
+                  "M=D\n"
+                  "@ARG\n"
+                  "D=M\n"
+                  "@SP\n"
+                  "A=M+1\n"
+                  "A=A+1\n"
+                  "M=D\n"
+                  "@THIS\n"
+                  "D=M\n"
+                  "@SP\n"
+                  "A=M+1\n"
+                  "A=A+1\n"
+                  "A=A+1\n"
+                  "M=D\n"
+                  "@THAT\n"
+                  "D=M\n"
+                  "@SP\n"
+                  "A=M+1\n"
+                  "A=A+1\n"
+                  "A=A+1\n"
+                  "A=A+1\n"
+                  "M=D \n"
+                  "D=A+1 // Update LCL\n"
+                  "@LCL\n"
+                  "M=D\n"
+                  "@SP // Update ARG\n"
+                  "D=M\n"
+                  "@%d\n"
+                  "D=D-A\n"
+                  "@ARG\n"
+                  "M=D\n"
+                  "@%s // Jump to function\n"
+                  "0;JMP\n"
+                  "(%s) // Return label\n", return_label, args->value.int_val, function_label, return_label);
+    strcat(dest, code);
 }
 
-// Children in AST: subroutine keyword, return type keyword, subroutine name, <parameterList>, <subroutineBody>.
-void parse_sub_dec(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: ('constructor' | 'method' | 'function'), ('int' | 'char' | 'boolean' | 'void' | identifier), identifier,
-    // '(', <parameterList>, ')', <subroutineBody>.
-    write_non_terminal(NT_SUBROUTINE_DEC, false, output);
-
-    copy_tag(current, lookahead, input, output);
-    copy_tag(current, lookahead, input, output);
-    copy_tag(current, lookahead, input, output);
-    advance_tag(current, lookahead, input);
-
-    parse_parameter_list(current, lookahead, input, output);
-
-    advance_tag(current, lookahead, input);
-    parse_sub_body(current, lookahead, input, output);
-
-    write_non_terminal(NT_SUBROUTINE_DEC, true, output);
+void parse_function(char *filename, Token *name, Token *local_vars, char *dest) {
+    char code[500+4*MAX_LINE_LENGTH] = "";
+    char loop_start_label[MAX_LINE_LENGTH] = "";
+    get_next_label_name(filename, loop_start_label);
+    char loop_end_label[MAX_LINE_LENGTH] = "";
+    get_next_label_name(filename, loop_end_label);
+    char function_label[MAX_LINE_LENGTH] = "";
+    get_function_label(name->value.str_val, function_label);
+    sprintf(code, "// Function\n"
+                  "(%s) // Function label\n"
+                  "@R13 // Initialise local segment via loop\n"
+                  "M=0  // (NB this is horribly slow, especially for small local segments!)\n"
+                  "(%s) // Here R13 stores the i for which we're initialising local i\n"
+                  "@R13\n"
+                  "D=M\n"
+                  "@%d\n"
+                  "D=D-A\n"
+                  "@%s\n"
+                  "D;JEQ\n"
+                  "@R13\n"
+                  "D=M\n"
+                  "M=M+1\n"
+                  "@LCL\n"
+                  "A=M+D\n"
+                  "M=0\n"
+                  "@%s\n"
+                  "0;JMP\n"
+                  "(%s)\n"
+                  "@%d // Set SP\n"
+                  "D=A\n"
+                  "@LCL\n"
+                  "D=M+D\n"
+                  "@SP\n"
+                  "M=D\n", function_label, loop_start_label, local_vars->value.int_val, loop_end_label,
+            loop_start_label, loop_end_label, local_vars->value.int_val);
+    strcat(dest, code);
 }
 
-// Children in AST: {<type>, identifier}.
-void parse_parameter_list(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    write_non_terminal(NT_PARAMETER_LIST, false, output);
-
-    if ((*current)->type != SYMBOL || (*current)->value.str_val[0] != ')') {
-        copy_tag(current, lookahead, input, output);
-        copy_tag(current, lookahead, input, output);
-    }
-    while((*current)->type != SYMBOL || (*current)->value.str_val[0] != ')') {
-        advance_tag(current, lookahead, input);
-        copy_tag(current, lookahead, input, output);
-        copy_tag(current, lookahead, input, output);
-    }
-
-    write_non_terminal(NT_PARAMETER_LIST, true, output);
+void parse_return(char *dest) {
+    strcat(dest, "// Return\n"
+                 "@5 // Store return address in R13\n"
+                 "D=A\n"
+                 "@LCL \n"
+                 "A=M-D\n"
+                 "D=M\n"
+                 "@R13\n"
+                 "M=D\n"
+                 "@SP // Copy return value to argument 0, NB this may overwrite\n"
+                 "A=M-1 // return address if argument has length 0\n"
+                 "D=M\n"
+                 "@ARG\n"
+                 "A=M\n"
+                 "M=D\n"
+                 "D=A+1 // Update SP\n"
+                 "@SP\n"
+                 "M=D\n"
+                 "@LCL // Restore THAT\n"
+                 "A=M-1\n"
+                 "D=M\n"
+                 "@THAT\n"
+                 "M=D\n"
+                 "@LCL // Restore THIS\n"
+                 "A=M-1\n"
+                 "A=A-1\n"
+                 "D=M\n"
+                 "@THIS\n"
+                 "M=D\n"
+                 "@3 // Restore ARG\n"
+                 "D=A\n"
+                 "@LCL\n"
+                 "A=M-D\n"
+                 "D=M\n"
+                 "@ARG\n"
+                 "M=D\n"
+                 "@4 // Restore LCL\n"
+                 "D=A\n"
+                 "@LCL\n"
+                 "A=M-D\n"
+                 "D=M\n"
+                 "@LCL\n"
+                 "M=D\n"
+                 "@R13 // Jump to return address\n"
+                 "A=M\n"
+                 "0;JMP\n");
 }
 
-// Children in AST: <varDec>s, <statements>.
-void parse_sub_body(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: '{', {varDec}, <statements>, '}'
-    write_non_terminal(NT_SUBROUTINE_BODY, false, output);
-
-    advance_tag(current, lookahead, input);
-    while ((*current)->value.key_val == KW_VAR) {
-        parse_var_dec(current, lookahead, input, output);
-    }
-    parse_statements(current, lookahead, input, output);
-    advance_tag(current, lookahead, input);
-
-    write_non_terminal(NT_SUBROUTINE_BODY, true, output);
+// Puts a label name of the form auto$[filename]$[number] into dest, where [number] is unique to the file.
+// Labels with names specified directly in VM code are translated into the form manual$[filename]$[label_name], so
+// there's no danger of duplication.
+void get_next_label_name(char *filename, char *dest) {
+    static int label_count = 0;
+    char buffer[MAX_LINE_LENGTH] = "";
+    sprintf(buffer, "auto$%s$%d", filename, label_count);
+    strcat(dest, buffer);
+    label_count++;
 }
 
-// Children in AST: variable keyword, type keyword, list of variable names.
-void parse_var_dec(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: 'var', ('int' | 'char' | 'boolean' | identifier), identifier, {',', identifier}, ';'
-    write_non_terminal(NT_VAR_DEC, false, output);
-    advance_tag(current, lookahead, input);
-    copy_tag(current, lookahead, input, output);
-    copy_tag(current, lookahead, input, output);
-    while(strcmp((*current)->value.str_val, ";") != 0) {
-        advance_tag(current, lookahead, input);
-        copy_tag(current, lookahead, input, output);
-    }
-    advance_tag(current, lookahead, input);
-    write_non_terminal(NT_VAR_DEC, true, output);
-}
-
-// Children in AST: As in CST.
-void parse_statements(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: {<letStatement> | <ifStatement> | <whileStatement> | <doStatement> | <returnStatement>}
-    write_non_terminal(NT_STATEMENTS, false, output);
-
-    while (true) {
-        switch ((*current)->value.key_val) {
-            case KW_LET: parse_let_statement(current, lookahead, input, output); break;
-            case KW_IF: parse_if_statement(current, lookahead, input, output); break;
-            case KW_WHILE: parse_while_statement(current, lookahead, input, output); break;
-            case KW_DO: parse_do_statement(current, lookahead, input, output); break;
-            case KW_RETURN: parse_return_statement(current, lookahead, input, output); break;
-            default: write_non_terminal(NT_STATEMENTS, true, output); return;
-        }
-    }
-}
-
-// Children in AST: destination variable, [<expression>] if present, right-hand side <expression>.
-void parse_let_statement(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: 'let', identifier, ['[', <expression>, ']'], '=', <expression>, ';'
-    write_non_terminal(NT_LET_STATEMENT, false, output);
-    advance_tag(current, lookahead, input);
-    copy_tag(current, lookahead, input, output);
-
-    if (strcmp((*current)->value.str_val, "[") == 0) {
-        copy_tag(current, lookahead, input, output);
-        parse_expression(current, lookahead, input, output);
-        copy_tag(current, lookahead, input, output);
-    }
-
-    advance_tag(current, lookahead, input);
-    parse_expression(current, lookahead, input, output);
-    advance_tag(current, lookahead, input);
-
-    write_non_terminal(NT_LET_STATEMENT, true, output);
-}
-
-// Children in AST: Condition <expression>, <statements> in if clause, <statements> in else clause (if present)
-void parse_if_statement(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: 'if', '(', <expression>, ')', '{', <statements>, '}', ['else', '{', <statements>, '}']
-    write_non_terminal(NT_IF_STATEMENT, false, output);
-
-    advance_tag(current, lookahead, input);
-    advance_tag(current, lookahead, input);
-    parse_expression(current, lookahead, input, output);
-    advance_tag(current, lookahead, input);
-    advance_tag(current, lookahead, input);
-    parse_statements(current, lookahead, input, output);
-    advance_tag(current, lookahead, input);
-
-    if ((*current)->type == KEYWORD && (*current)->value.key_val == KW_ELSE) {
-        advance_tag(current, lookahead, input);
-        advance_tag(current, lookahead, input);
-        parse_statements(current, lookahead, input, output);
-        advance_tag(current, lookahead, input);
-    }
-
-    write_non_terminal(NT_IF_STATEMENT, true, output);
-}
-
-// Children in AST: Condition <expression>, <statements> in loop body.
-void parse_while_statement(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: 'while', '(', <expression>, ')', '{', <statements>, '}'
-    write_non_terminal(NT_WHILE_STATEMENT, false, output);
-
-    advance_tag(current, lookahead, input);
-    advance_tag(current, lookahead, input);
-    parse_expression(current, lookahead, input, output);
-    advance_tag(current, lookahead, input);
-    advance_tag(current, lookahead, input);
-    parse_statements(current, lookahead, input, output);
-    advance_tag(current, lookahead, input);
-
-    write_non_terminal(NT_WHILE_STATEMENT, true, output);
-}
-
-// Children in AST: Just the subroutine call.
-void parse_do_statement(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: 'do', <expression>, ';'
-    write_non_terminal(NT_DO_STATEMENT, false, output);
-
-    advance_tag(current, lookahead, input);
-    parse_sub_call(current, lookahead, input, output);
-    advance_tag(current, lookahead, input);
-
-    write_non_terminal(NT_DO_STATEMENT, true, output);
-}
-
-// Children in AST: <expression> to return (if present).
-void parse_return_statement(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: 'return', [<expression>], ';'
-    write_non_terminal(NT_RETURN_STATEMENT, false, output);
-
-    advance_tag(current, lookahead, input);
-    if ((*current)->type != SYMBOL || strcmp((*current)->value.str_val, ";") != 0) {
-        parse_expression(current, lookahead, input, output);
-    }
-    advance_tag(current, lookahead, input);
-
-    write_non_terminal(NT_RETURN_STATEMENT, true, output);
-}
-
-// Children in AST: As in original, <term>, {<op>, <term>}.
-void parse_expression(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: <term>, {<op>, <term>}
-    // where <op> ::= '+' | '-' | '*' | '/' | '&' | '|' | '<' | '>' | '='
-    write_non_terminal(NT_EXPRESSION, false, output);
-
-    parse_term(current, lookahead, input, output);
-    while ((*current)->type == SYMBOL && ((*current)->value.str_val[0] == '+' || (*current)->value.str_val[0] == '-' ||
-            (*current)->value.str_val[0] == '*' || (*current)->value.str_val[0] == '/' || (*current)->value.str_val[0] == '&' ||
-            (*current)->value.str_val[0] == '|' || (*current)->value.str_val[0] == '<' || (*current)->value.str_val[0] == '>' ||
-            (*current)->value.str_val[0] == '=')) {
-        copy_tag(current, lookahead, input, output);
-        parse_term(current, lookahead, input, output);
-    }
-
-    write_non_terminal(NT_EXPRESSION, true, output);
-}
-
-// Children in AST: identifier, ['.', identifier], <expressionList>
-void parse_sub_call(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: identifier, ['.', identifier], '(', <expressionList>, ')'
-    write_non_terminal(NT_SUBROUTINE_CALL, false, output);
-
-    copy_tag(current, lookahead, input, output);
-    if ((*current)->type == SYMBOL && (*current)->value.str_val[0] == '.') {
-        copy_tag(current, lookahead, input, output);
-        copy_tag(current, lookahead, input, output);
-    }
-    advance_tag(current, lookahead, input);
-    parse_expression_list(current, lookahead, input, output);
-    advance_tag(current, lookahead, input);
-
-    write_non_terminal(NT_SUBROUTINE_CALL, true, output);
-}
-
-// Children in AST: Everything except ()s around an <expression>.
-void parse_term(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: integerLiteral | stringLiteral | 'true' | 'false' | 'null' | 'this' |
-    //         identifier, ['[', <expression>, ']'] |
-    //         '(', <expression>, ')' |
-    //         ('-' | '~'), <term> |
-    //         <subroutineCall>
-    // NOTE: <subroutineCall> starts with an identifier. We need to use lookahead to distinguish between a
-    // <subroutineCall> and a terminal identifier.
-    write_non_terminal(NT_TERM, false, output);
-
-    if ((*current)->type == IDENTIFIER) {
-        // Subroutine call case
-        if ((*lookahead)->type == SYMBOL &&
-            ((*lookahead)->value.str_val[0] == '.' || (*lookahead)->value.str_val[0] == '(')) {
-            parse_sub_call(current, lookahead, input, output);
-        } else {
-            // Otherwise we have identifier and maybe '[', <expression>, ']'.
-            copy_tag(current, lookahead, input, output);
-            if ((*current)->type == SYMBOL && (*current)->value.str_val[0] == '[') {
-                copy_tag(current, lookahead, input, output);
-                parse_expression(current, lookahead, input, output);
-                copy_tag(current, lookahead, input, output);
-            }
-        }
-    } else if ((*current)->type == INTEGER_LITERAL || (*current)->type == STRING_LITERAL || (*current)->type == KEYWORD) {
-        // Keyword cases are 'true', 'false', 'null' and 'this'.
-        copy_tag(current, lookahead, input, output);
-    } else {
-        // We have either '(', <expression>, ')' or ('-' | '~'), <term>
-        if ((*current)->value.str_val[0] == '(') {
-            advance_tag(current, lookahead, input);
-            parse_expression(current, lookahead, input, output);
-            advance_tag(current, lookahead, input);
-        } else {
-            copy_tag(current, lookahead, input, output);
-            parse_term(current, lookahead, input, output);
-        }
-    }
-
-    write_non_terminal(NT_TERM, true, output);
-}
-
-// Children in AST: Just the <expression>s.
-void parse_expression_list(Tag **current, Tag **lookahead, FILE *input, FILE *output) {
-    // Syntax: [<expression>, {',', <expression>}]
-    write_non_terminal(NT_EXPRESSION_LIST, false, output);
-
-    // Note: current will be ')' if and only if the <expression_list> is empty.
-    if ((*current)->type != SYMBOL || (*current)->value.str_val[0] != ')') {
-        parse_expression(current, lookahead, input, output);
-        while((*current)->type == SYMBOL && (*current)->value.str_val[0] == ',') {
-            advance_tag(current, lookahead, input);
-            parse_expression(current, lookahead, input, output);
-        }
-    }
-
-    write_non_terminal(NT_EXPRESSION_LIST, true, output);
-}
-
-void compile_file(FILE *input, FILE *output) {
-    CompileData *data = malloc(sizeof(CompileData));
-    data->input = input;
-    data->output = output;
-    data->class_name = NULL;
-
-    data->class_table = NULL;
-    data->subroutine_table = NULL;
-
-    data->current = NULL;
-    data->lookahead = NULL;
-
-    advance_tag(&(data->current), &(data->lookahead), input);
-    advance_tag(&(data->current), &(data->lookahead), input);
-
-    compile_class(data);
-
-    // *Lookahead, *current, *class and *subroutine will be NULL again at this point, no need to free them.
-    free(data);
-}
-
-// Outputs all VM code for the given <class> with no side effects.
-void compile_class(CompileData *data) {
-    // AST format: class name identifier, <classVarDec>s, <subroutineDec>s.
-    // Skip open tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Store class name.
-    char *current_class_name = data->current->value.str_val;
-    data->class_name = malloc(strlen(current_class_name)+1);
-    strcpy(data->class_name, current_class_name);
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Create class_table symbol table from <classVarDecs>.
-    data->class_table = malloc_table();
-    while (data->current->value.nt_val == NT_CLASS_VAR_DEC) {
-        compile_class_var_dec(data);
-    }
-
-    // Compile all subroutines using class_table symbol table.
-    while (data->current->value.nt_val == NT_SUBROUTINE_DEC) {
-        compile_sub_dec(data);
-    }
-
-    // Cleanup, skip closing tag.
-	free(data->class_name);
-    free_table(data->class_table);
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Adds the variables from the given <classVarDec> to the class_table symbol table.
-void compile_class_var_dec(CompileData *data) {
-    // AST format: variable keyword, type keyword, list of identifiers.
-    // Skip open tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Store variable kind.
-    VariableKind kind = (data->current->value.key_val == KW_FIELD) ? VK_FIELD : VK_STATIC;
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Need to copy variable type as otherwise it will be freed on calling advance_tag again.
-    char *type = type_to_string(data->current);
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Add variables to symbol table.
-    while(!(data->current->close_tag)) {
-        add_to_table(data->class_table, data->current->value.str_val, type, kind);
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-    }
-
-    // Cleanup, skip closing tag.
-    free(type);
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Outputs all VM code for the current <subroutineDec> with no side effects.
-void compile_sub_dec(CompileData *data) {
-    // AST format: subroutine keyword, return type keyword, name, <parameterList>, <subroutineBody>.
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Store subroutine keyword for later.
-    Keyword sub_kind = data->current->value.key_val;
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Return type is unused (except in type-checking which we don't implement). Skip it.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Copy subroutine name for later.
-    char *sub_name = malloc(strlen(data->current->value.str_val)+1);
-    strcpy(sub_name, data->current->value.str_val);
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Create subroutine symbol table and add all given arguments to it. Methods are passed this as argument 0 in
-    // addition to those listed in the <parameterList>.
-    data->subroutine_table = malloc_table();
-    if (sub_kind == KW_METHOD) {
-        add_to_table(data->subroutine_table, "this", data->class_name, VK_ARGUMENT);
-    }
-    compile_parameter_list(data);
-
-    // Compile the subroutine body.
-    compile_sub_body(data, sub_kind, sub_name);
-
-    // Cleanup, skip closing tag.
-    free_table(data->subroutine_table);
-    free(sub_name);
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Outputs all VM code for the current <subBody>, populating the subroutine's symbol table in the process.
-void compile_sub_body(CompileData *data, Keyword sub_kind, char *sub_name) {
-    // AST format: <varDec>s, <statements>.
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // First we finish populating the symbol table by adding local variables.
-    while(data->current->value.nt_val == NT_VAR_DEC) {
-        compile_var_dec(data);
-    }
-
-    // Now at last we have the information we need to start generating VM code!
-    char code[MAX_LINE_LENGTH];
-    sprintf(code, "function %s.%s %d\n", data->class_name, sub_name,
-            data->subroutine_table->num_allocated[VK_VAR]);
-    fputs(code, data->output);
-
-    // If we're a method or a constructor, we'll need to initialise the "this" memory segment.
-    // If we're a method, it will be the first argument passed in by the subroutine call and hence stored in argument 0.
-    if (sub_kind == KW_METHOD) {
-        sprintf(code, "push argument 0\n"
-                                    "pop pointer 0\n");
-        fputs(code, data->output);
-    }
-    // If we're a constructor, we will need to allocate space on the heap.
-    else if (sub_kind == KW_CONSTRUCTOR) {
-        sprintf(code, "push constant %d\n"
-                      "call Memory.alloc 1\n"
-                      "pop pointer 0\n", data->class_table->num_allocated[VK_FIELD]);
-        fputs(code, data->output);
-    }
-
-    // Now we generate code for the actual subroutine body.
-    compile_statements(data);
-
-    // Skip closing tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Add variable(s) from given <varDec> to subroutine symbol table.
-void compile_var_dec(CompileData *data) {
-    // AST format: type keyword, list of identifiers.
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Copy variable type.
-    char *type = type_to_string(data->current);
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Add variables to symbol table.
-    while(!(data->current->close_tag)) {
-        add_to_table(data->subroutine_table, data->current->value.str_val, type, VK_VAR);
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-    }
-
-    // Cleanup, skip closing tag.
-    free(type);
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Outputs all VM code for the current <statements> with no side effects.
-void compile_statements(CompileData *data) {
-    // AST format: As in CST.
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    while(!(data->current->close_tag)) {
-        switch (data->current->value.nt_val) {
-            case NT_LET_STATEMENT: compile_let_statement(data); break;
-            case NT_DO_STATEMENT: compile_do_statement(data); break;
-            case NT_IF_STATEMENT: compile_if_statement(data); break;
-            case NT_WHILE_STATEMENT: compile_while_statement(data); break;
-            case NT_RETURN_STATEMENT: compile_return_statement(data); break;
-            default: printf("Unexpected tag in <statements>.\n"); exit(EXIT_FAILURE);
-        }
-    }
-
-    // Skip closing tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Outputs all VM code for the current <letStatement> with no side effects.
-void compile_let_statement(CompileData *data) {
-    // AST format: destination variable, [<expression>] if present, right-hand side <expression>.
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-    bool brackets = false;
-    char code[MAX_LINE_LENGTH];
-
-    // Comment for debugging.
-    fputs("// Compiling <letStatement>\n", data->output);
-
-    // Look up destination variable in symbol tables and advance.
-    TableEntry *entry;
-    int table_pos = get_table_entry(data->subroutine_table, data->current->value.str_val);
-    if (table_pos != -1) {
-        entry = data->subroutine_table->table_array[table_pos];
-    } else {
-        table_pos = get_table_entry(data->class_table, data->current->value.str_val);
-        entry = data->class_table->table_array[table_pos];
-    }
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // If there are square brackets present, evaluate their contents and leave the address we need on top of the stack.
-    if (data->current->type == SYMBOL) {
-        brackets = true;
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-        compile_expression(data);
-        char buffer[MAX_LINE_LENGTH];
-        var_to_string(entry, buffer);
-        sprintf(code, "push %s\n"
-                      "add\n", buffer);
-        fputs(code, data->output);
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-    }
-
-    // Now evaluate the value to assign and leave it on the stack.
-    compile_expression(data);
-
-    // Now actually store the value.
-    if (brackets) { // Here we have the values we need in the wrong order, so we use temp 0 as a holding facility.
-        fputs("pop temp 0\n"
-              "pop pointer 1\n"
-              "push temp 0\n"
-              "pop that 0\n", data->output);
-    } else {
-        char buffer[MAX_LINE_LENGTH];
-        var_to_string(entry, buffer);
-        sprintf(code, "pop %s\n", buffer);
-        fputs(code, data->output);
-    }
-
-    // Skip closing tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Outputs all VM code for the current <ifStatement> with no side effects.
-void compile_if_statement(CompileData *data) {
-    // AST format: Condition <expression>, <statements> in if clause, <statements> in else clause (if present)
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-    char code[MAX_LINE_LENGTH];
-
-    // Define auto-incrementing labels.
-    static int label_number = 0;
-    char end_if_label[MAX_LINE_LENGTH];
-    sprintf(end_if_label, "end_if_%d", label_number);
-    char end_else_label[MAX_LINE_LENGTH];
-    sprintf(end_else_label, "end_else_%d", label_number);
-    label_number++;
-
-    // Comment for debugging.
-    fputs("// Compiling <ifStatement>\n", data->output);
-
-    // Check the if condition and jump past the if statement if it's false.
-    compile_expression(data);
-    sprintf(code, "not\n"
-                                "if-goto %s\n", end_if_label);
-    fputs(code, data->output);
-
-    // Output code for the <statements>.
-    compile_statements(data);
-
-    // If no else clause is present, output the label and we're done.
-    if (data->current->close_tag) {
-        sprintf(code, "label %s\n", end_if_label);
-        fputs(code, data->output);
-    } else { // Otherwise, output code for the else clause with appropriate label placement.
-        sprintf(code, "goto %s\n"
-                      "label %s\n", end_else_label, end_if_label);
-        fputs(code, data->output);
-        compile_statements(data);
-        sprintf(code, "label %s\n", end_else_label);
-        fputs(code, data->output);
-    }
-
-    // Skip closing tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Outputs all VM code for the current <whileStatement> with no side effects.
-void compile_while_statement(CompileData *data) {
-    // AST format: Condition <expression>, <statements> in loop body.
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-    char code[MAX_LINE_LENGTH];
-
-    // Define auto-incrementing labels.
-    static int label_number = 0;
-    char start_loop_label[MAX_LINE_LENGTH];
-    sprintf(start_loop_label, "start_while_%d", label_number);
-    char end_loop_label[MAX_LINE_LENGTH];
-    sprintf(end_loop_label, "end_while_%d", label_number);
-    label_number++;
-
-    // Output label for start of loop.
-    sprintf(code, "label %s\n", start_loop_label);
-    fputs(code, data->output);
-
-    // Output code to check the loop condition, then break out of the loop if it's false.
-    compile_expression(data);
-    sprintf(code, "not\n"
-                         "if-goto %s\n", end_loop_label);
-    fputs(code, data->output);
-
-    // Output code for the loop body.
-    compile_statements(data);
-
-    // Output code to loop and label to break out of loop.
-    sprintf(code, "goto %s\n"
-                  "label %s\n", start_loop_label, end_loop_label);
-    fputs(code, data->output);
-
-    // Skip closing tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Outputs all VM code for the current <doStatement> with no side effects.
-void compile_do_statement(CompileData *data) {
-    // AST format: Just the subroutine call.
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Comment for debugging.
-    fputs("// Compiling <doStatement>\n", data->output);
-
-    compile_sub_call(data);
-    fputs("pop temp 0\n", data->output); // Discard return value.
-
-    // Skip closing tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Outputs all VM code for the current <returnStatement> with no side effects.
-void compile_return_statement(CompileData *data) {
-    // AST format: <expression> to return (if present).
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Comment for debugging.
-    fputs("// Compiling <returnStatement>\n", data->output);
-
-    // Leave return value on the stack (or 0 if there is no return value, just to avoid stack underflow).
-    if (!(data->current->close_tag)) {
-        compile_expression(data);
-    } else {
-        fputs("push constant 0\n", data->output);
-    }
-
-    // Actually return.
-    fputs("return\n", data->output);
-
-    // Skip closing tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Outputs VM code that evaluates the current <expression> and leaves its value on top of the stack.
-void compile_expression(CompileData *data) {
-    // AST format: As in original, <term>, {<op>, <term>}.
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    compile_term(data);
-    while(!(data->current->close_tag)) {
-        char current_op = data->current->value.str_val[0];
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-        compile_term(data);
-
-        // We now have the results of both terms on top of the stack, so we just need to translate the operation.
-        switch(current_op) {
-            case '+': fputs("add\n", data->output); break;
-            case '-': fputs("sub\n", data->output); break;
-            case '*': fputs("call Math.multiply 2\n", data->output); break;
-            case '/': fputs("call Math.divide 2\n", data->output); break;
-            case '&': fputs("and\n", data->output); break;
-            case '|': fputs("or\n", data->output); break;
-            case '<': fputs("lt\n", data->output); break;
-            case '>': fputs("gt\n", data->output); break;
-            case '=': fputs("eq\n", data->output); break;
-            default: printf("Unsupported <op> in <expression>.\n"); exit(EXIT_FAILURE);
-        }
-    }
-
-    // Skip closing tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Outputs VM code that calls the given subroutine and leaves the result on the stack.
-void compile_sub_call(CompileData *data) {
-    // AST format: identifier, ['.', identifier], <expressionList>
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-    char code[MAX_LINE_LENGTH];
-    char sub_name[MAX_LINE_LENGTH];
-    char first_identifier[MAX_LINE_LENGTH];
-    bool is_method = false;
-
-    // Take a temporary copy of the current identifier (the one before the dot) and advance.
-    strcpy(first_identifier, data->current->value.str_val);
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    // Subroutine calls are in the form [class name].[subroutine name], [variable name].[subroutine name] (for methods),
-    // or [subroutine name] (for method calls to the current class). The actual name of the subroutine is in the form
-    // [class name].[subroutine name]. We need to a) find the name and store it in sub_name, and b) if this is a method
-    // call, push the owning class instance onto the stack as the first argument (where it will become the value of
-    // "this").
-    if (data->current->type != SYMBOL) {
-        is_method = true;
-        fputs("push pointer 0\n", data->output);
-        sprintf(sub_name, "%s.%s", data->class_name, first_identifier);
-    }
-    else {
-        // Advance past the dot.
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-
-        // Use the symbol tables to check if the thing before the dot is a known variable name. If it is one,
-        // set entry to its entry.
-        TableEntry *entry;
-        int table_pos = get_table_entry(data->subroutine_table, first_identifier);
-        if (table_pos != -1) {
-            is_method = true;
-            entry = data->subroutine_table->table_array[table_pos];
-        } else {
-            table_pos = get_table_entry(data->class_table, first_identifier);
-            if (table_pos != -1) {
-                is_method = true;
-                entry = data->class_table->table_array[table_pos];
-            }
-        }
-
-        // In this case we are calling a method, and we have the "owning" variable's table entry. We must push the
-        // variable's value (i.e. its address in RAM) onto the stack.
-        if (is_method) {
-            char buffer[MAX_LINE_LENGTH];
-            var_to_string(entry, buffer);
-            sprintf(code, "push %s\n", buffer);
-            fputs(code, data->output);
-            sprintf(sub_name, "%s.%s", entry->type, data->current->value.str_val);
-        }
-        // Otherwise, we are calling a constructor or a function. We need no special preparation and its name is
-        // exactly what it appears to be.
-        else {
-            sprintf(sub_name, "%s.%s", first_identifier, data->current->value.str_val);
-        }
-
-        // Either way, advance past the second identifier.
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-    }
-
-    // Output code that leaves all the non-this arguments on the stack.
-    int number_args = compile_expression_list(data);
-    if (is_method) {
-        number_args++;
-    }
-
-    // Output the actual function call.
-    sprintf(code, "call %s %d\n", sub_name, number_args);
-    fputs(code, data->output);
-
-    // Skip closing tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Outputs VM code that evaluates each expression in the given <expressionList>, leaving the results on the stack, and
-// returns the total number of expressions.
-int compile_expression_list(CompileData *data) {
-    // Children in AST: Just the <expression>s.
-    // AST format: As in original, <term>, {<op>, <term>}.
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-    int expression_count = 0;
-
-    while (!(data->current->close_tag)) {
-        compile_expression(data);
-        expression_count++;
-    }
-
-    // Skip closing tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-    return expression_count;
-}
-
-// Outputs VM code that evaluates the current <term> and leaves its value on top of the stack.
-void compile_term(CompileData *data) {
-    // AST syntax: integerLiteral | stringLiteral | 'true' | 'false' | 'null' | 'this' |
-    //             identifier, ['[', <expression>, ']'] |
-    //             <expression> |
-    //             ('-' | '~'), <term> |
-    //             <subroutineCall>
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-    char code[MAX_LINE_LENGTH];
-
-    if (data->current->type == INTEGER_LITERAL) {
-        sprintf(code, "push constant %d\n", data->current->value.int_val);
-        fputs(code, data->output);
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-    } else if (data->current->type == STRING_LITERAL) {
-        char *literal = data->current->value.str_val;
-
-        // dare you enter my magical realm
-        sprintf(code, "push constant %d\n"
-                      "call String.new 1\n", strlen(literal));
-        fputs(code, data->output);
-        for(int i = 0; i < strlen(literal); i++) {
-            sprintf(code, "push constant %d\n"
-                          "call String.appendChar 2\n", literal[i]);
-            fputs(code, data->output);
-        }
-
-        // We're done! Yay! The value of a String set to the given literal is now on the stack, with no long-term
-        // repercussions whatsoever! *turns and walks away from burning building*
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-    } else if (data->current->type == KEYWORD) {
-        switch(data->current->value.key_val) {
-            case KW_NULL:
-            case KW_FALSE: fputs("push constant 0\n", data->output); break;
-            case KW_TRUE: fputs("push constant 1\n"
-                                "neg\n", data->output); break;
-            case KW_THIS: fputs("push pointer 0\n", data->output); break;
-            default: printf("Unsupported keyword in <term>.\n"); exit(EXIT_FAILURE);
-        }
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-    } else if (data->current->type == IDENTIFIER) {
-        // In this case it's a variable. Pull the symbol table entry and advance the tag.
-        TableEntry *entry;
-        int table_pos = get_table_entry(data->subroutine_table, data->current->value.str_val);
-        if (table_pos == -1) {
-            table_pos = get_table_entry(data->class_table, data->current->value.str_val);
-            entry = data->class_table->table_array[table_pos];
-        } else {
-            entry = data->subroutine_table->table_array[table_pos];
-        }
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-
-        // In all cases, we'll need to push the variable's value onto the stack.
-        char buffer[MAX_LINE_LENGTH];
-        var_to_string(entry, buffer);
-        sprintf(code, "push %s\n", buffer);
-        fputs(code, data->output);
-
-        // If we have [<expression>] after the identifier, then we need to read x[i] as *(x+i).
-        if (!(data->current->close_tag)) {
-            // Skip the brackets and put the result of the <expression> onto the stack.
-            advance_tag(&(data->current), &(data->lookahead), data->input);
-            compile_expression(data);
-            advance_tag(&(data->current), &(data->lookahead), data->input);
-            fputs("add\n"
-                  "pop pointer 1\n"
-                  "push that 0\n", data->output);
-        }
-    } else if (data->current->type == NON_TERMINAL && data->current->value.nt_val == NT_EXPRESSION) {
-        compile_expression(data);
-    } else if (data->current->type == SYMBOL) {
-        char op_value = data->current->value.str_val[0];
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-        compile_term(data);
-        if (op_value == '-') {
-            fputs("neg\n", data->output);
-        } else { // Must be '~'
-            fputs("not\n", data->output);
-        }
-    } else { // In this case it must be a subroutine call.
-        compile_sub_call(data);
-    }
-
-    // Skip closing tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Add all given arguments to subroutine symbol table.
-void compile_parameter_list(CompileData *data) {
-    // AST syntax: {<type>, identifier}.
-    // Skip opening tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-
-    while (!(data->current->close_tag)) {
-        char *type = type_to_string(data->current);
-        add_to_table(data->subroutine_table, data->lookahead->value.str_val,
-                     type, VK_ARGUMENT);
-        free(type);
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-        advance_tag(&(data->current), &(data->lookahead), data->input);
-    }
-
-    // Skip closing tag.
-    advance_tag(&(data->current), &(data->lookahead), data->input);
-}
-
-// Converts the current tag (assumed to be a keyword or identifier) into a string and returns the string. NB the string
-// will need to be freed in order to avoid a memory leak.
-char *type_to_string(Tag *current) {
-    char *type;
-    if (current->type == IDENTIFIER) {
-        type = malloc(strlen(current->value.str_val) + 1);
-        strcpy(type, current->value.str_val);
-    } else {
-        type = malloc(8);
-        switch (current->value.key_val) {
-            case KW_INT: strcpy(type, "int"); break;
-            case KW_BOOLEAN: strcpy(type, "boolean"); break;
-            case KW_CHAR: strcpy(type, "char"); break;
-            default: printf("Bad variable type in <varDec>.\n"); exit(EXIT_FAILURE);
-        }
-    }
-    return type;
-}
-
-void var_to_string(TableEntry *var_entry, char *buffer) {
-    switch(var_entry->kind) {
-        case VK_FIELD: sprintf(buffer, "this %d", var_entry->offset); break;
-        case VK_VAR: sprintf(buffer, "local %d", var_entry->offset); break;
-        case VK_STATIC: sprintf(buffer, "static %d", var_entry->offset); break;
-        case VK_ARGUMENT: sprintf(buffer, "argument %d", var_entry->offset); break;
-        default: printf("Impossible enum value."); exit(EXIT_FAILURE);
-    }
+// Puts a label name of the form call$[function_name] into dest. Recall that every function name in file Blah.vm
+// has to start with "Blah.", so there can't be two functions with the same name anywhere in the folder and this
+// label name will be unique across all the code we're compiling. 
+void get_function_label(char *function_name, char *dest) {
+    sprintf(dest, "call$%s", function_name);
 }
