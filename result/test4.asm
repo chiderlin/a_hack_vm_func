@@ -22,6 +22,7 @@ A=M+D
 M=0
 @auto$Test 4/StaticsTest//Sys.vm$0
 0;JMP
+
 (auto$Test 4/StaticsTest//Sys.vm$1)
 @0 // Set SP
 D=A
