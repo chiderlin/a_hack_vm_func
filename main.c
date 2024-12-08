@@ -234,7 +234,7 @@ int list_vm_files(const char *path, char ***list) {
     int length = 0;
     entry = readdir(dir);
     while (entry != NULL) {
-        if (fnmatch("*.vm", entry->d_name, FNM_CASEFOLD) == 0) {
+        if (fnmatch("*.vm", entry->d_name, FNM_PERIOD) == 0) {
             length++;
         }
         entry = readdir(dir);
@@ -246,7 +246,7 @@ int list_vm_files(const char *path, char ***list) {
     dir = opendir(path);
     entry = readdir(dir);
     while (entry != NULL) {
-        if (fnmatch("*.vm", entry->d_name, FNM_CASEFOLD) == 0) {
+        if (fnmatch("*.vm", entry->d_name, FNM_PERIOD) == 0) {
             (*list)[i] = (char *)malloc((MAX_PATH+1)*sizeof(char));
             sprintf((*list)[i], "%s/%s", path, entry->d_name);
             i++;
