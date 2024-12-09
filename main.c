@@ -66,7 +66,7 @@ int main(int argc, char *argv[]) {
     if (output == NULL) {
         exit(EXIT_FAILURE);
     }
-
+    // compile include lex_file & parse_file
     if (is_folder(input_name)) {
         compile_folder(input_name, output);
     } else {
