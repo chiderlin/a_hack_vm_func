@@ -2,12 +2,12 @@
 (call$Sys.init) // Function label
 @R13 // Initialise local segment via loop
 M=0  // (NB this is horribly slow, especially for small local segments!)
-(auto$Sys.vm$0) // Here R13 stores the i for which we're initialising local i
+(auto$Sys.vm$0) // loop_start_label // Here R13 stores the i for which we're initialising local i
 @R13
 D=M
-@0
+@0 // local_vars->value.int
 D=D-A
-@auto$Sys.vm$1
+@auto$Sys.vm$1 // loop_end_label
 D;JEQ
 @R13
 D=M
@@ -15,15 +15,16 @@ M=M+1
 @LCL
 A=M+D
 M=0
-@auto$Sys.vm$0
+@auto$Sys.vm$0 // loop_start_label
 0;JMP
-(auto$Sys.vm$1)
-@0 // Set SP
+(auto$Sys.vm$1) //loop_end_label
+@0 // Set SP  // local_vars->value.int
 D=A
 @LCL
 D=M+D
 @SP
 M=D
+
 //push
 @4000
 D=A
@@ -31,6 +32,7 @@ D=A
 M=M+1
 A=M-1
 M=D
+
 //pop
 @THIS
 D=A
@@ -43,6 +45,7 @@ D=M
 @R13
 A=M
 M=D
+
 //push
 @5000
 D=A
@@ -50,6 +53,7 @@ D=A
 M=M+1
 A=M-1
 M=D
+
 //pop
 @THAT
 D=A
@@ -62,6 +66,7 @@ D=M
 @R13
 A=M
 M=D
+
 // Call
 @auto$Sys.vm$2 // Push call frame to stack
 D=A
@@ -106,6 +111,7 @@ M=D
 @call$Sys.main // Jump to function
 0;JMP
 (auto$Sys.vm$2) // Return label
+
 //pop
 @R6
 D=A
@@ -123,6 +129,7 @@ M=D
 // Goto
 @manual$Sys.vm$LOOP
 0;JMP
+
 // Function
 (call$Sys.main) // Function label
 @R13 // Initialise local segment via loop
@@ -149,6 +156,7 @@ D=A
 D=M+D
 @SP
 M=D
+
 //push
 @4001
 D=A
@@ -156,6 +164,7 @@ D=A
 M=M+1
 A=M-1
 M=D
+
 //pop
 @THIS
 D=A
@@ -168,6 +177,7 @@ D=M
 @R13
 A=M
 M=D
+
 //push
 @5001
 D=A
@@ -175,6 +185,7 @@ D=A
 M=M+1
 A=M-1
 M=D
+
 //pop
 @THAT
 D=A
@@ -187,6 +198,7 @@ D=M
 @R13
 A=M
 M=D
+
 //push
 @200
 D=A
@@ -194,6 +206,7 @@ D=A
 M=M+1
 A=M-1
 M=D
+
 //pop
 @1
 D=A
@@ -209,6 +222,7 @@ D=M
 @R13
 A=M
 M=D
+
 //push
 @40
 D=A
@@ -216,6 +230,7 @@ D=A
 M=M+1
 A=M-1
 M=D
+
 //pop
 @2
 D=A
@@ -231,6 +246,7 @@ D=M
 @R13
 A=M
 M=D
+
 //push
 @6
 D=A
@@ -238,6 +254,7 @@ D=A
 M=M+1
 A=M-1
 M=D
+
 //pop
 @3
 D=A
@@ -253,6 +270,7 @@ D=M
 @R13
 A=M
 M=D
+
 //push
 @123
 D=A
@@ -260,6 +278,7 @@ D=A
 M=M+1
 A=M-1
 M=D
+
 // Call
 @auto$Sys.vm$5 // Push call frame to stack
 D=A
@@ -304,7 +323,8 @@ M=D
 @call$Sys.add12 // Jump to function
 0;JMP
 (auto$Sys.vm$5) // Return label
-//pop
+
+//pop //pop temp 0
 @R5
 D=A
 @R13
@@ -316,6 +336,7 @@ D=M
 @R13
 A=M
 M=D
+// push local 0
 @0
 D=A
 @LCL
@@ -325,6 +346,7 @@ D=M
 M=M+1
 A=M-1
 M=D
+// push local 1
 @1
 D=A
 @LCL
@@ -334,6 +356,7 @@ D=M
 M=M+1
 A=M-1
 M=D
+// push local 2
 @2
 D=A
 @LCL
@@ -343,6 +366,7 @@ D=M
 M=M+1
 A=M-1
 M=D
+// push local 3
 @3
 D=A
 @LCL
@@ -352,6 +376,7 @@ D=M
 M=M+1
 A=M-1
 M=D
+// push local 4
 @4
 D=A
 @LCL
@@ -393,6 +418,7 @@ D=M
 @SP
 A=M-1
 M=M+D
+
 // Return
 @5 // Store return address in R13
 D=A
@@ -438,6 +464,7 @@ M=D
 @R13 // Jump to return address
 A=M
 0;JMP
+
 // Function
 (call$Sys.add12) // Function label
 @R13 // Initialise local segment via loop
@@ -464,6 +491,7 @@ D=A
 D=M+D
 @SP
 M=D
+
 //push
 @4002
 D=A
@@ -471,18 +499,15 @@ D=A
 M=M+1
 A=M-1
 M=D
+
 //pop
 @THIS
 D=A
 @R13
 M=D
 @SP
-M=M-1
-A=M
-D=M
-@R13
-A=M
-M=D
+M=M-1tion Sys.
+
 //push
 @5002
 D=A
@@ -490,6 +515,7 @@ D=A
 M=M+1
 A=M-1
 M=D
+
 //pop
 @THAT
 D=A
@@ -511,6 +537,7 @@ D=M
 M=M+1
 A=M-1
 M=D
+
 //push
 @12
 D=A
@@ -526,6 +553,7 @@ D=M
 @SP
 A=M-1
 M=M+D
+
 // Return
 @5 // Store return address in R13
 D=A
