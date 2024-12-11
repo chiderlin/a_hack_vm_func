@@ -134,12 +134,12 @@ M=D
 (call$Sys.main) // Function label
 @R13 // Initialise local segment via loop
 M=0  // (NB this is horribly slow, especially for small local segments!)
-(auto$Sys.vm$3) // Here R13 stores the i for which we're initialising local i
+(auto$Sys.vm$3) //loop_start_label // Here R13 stores the i for which we're initialising local i
 @R13
 D=M
-@5
+@5 // local_vars->value.int
 D=D-A
-@auto$Sys.vm$4
+@auto$Sys.vm$4 //loop_end_label
 D;JEQ
 @R13
 D=M
@@ -147,9 +147,9 @@ M=M+1
 @LCL
 A=M+D
 M=0
-@auto$Sys.vm$3
+@auto$Sys.vm$3 //loop_start_label
 0;JMP
-(auto$Sys.vm$4)
+(auto$Sys.vm$4) //loop_end_label
 @5 // Set SP
 D=A
 @LCL
