@@ -1,5 +1,8 @@
 #### a_hack_vm_func
 
+#### week 10:
+
+Compile vm function to assembly code.
 
 test 1: test a simple calculation and return the result.
 
@@ -9,11 +12,12 @@ test 3: execute Sys.init(), main.function
 
 test 4: execute Sys.init(), class function..
 
-
 #### how to run ?
 
 1. make
 
-2. ./test {folder}/ .asm  
+2. ./test {folder}/ .asm
 
 ./test ./Test\ 4/StaticsTest/ test4.asm
+
+#### download tools, view week5 material.
